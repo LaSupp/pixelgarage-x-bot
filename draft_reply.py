@@ -177,7 +177,7 @@ def main() -> None:
     query = random.choice(SEARCH_QUERIES)
     print(f"Searching X with query: {query}")
 
-resp = x_client.search_recent_tweets(
+    resp = x_client.search_recent_tweets(
         query=query,
         max_results=100,
         tweet_fields=["author_id", "public_metrics", "created_at", "reply_settings"],
