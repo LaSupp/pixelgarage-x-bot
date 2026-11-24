@@ -46,6 +46,19 @@ def comment_and_close(repo: str, issue_number: str, token: str, message: str) ->
     ).raise_for_status()
 
 
+def post_comment_only(repo: str, issue_number: str, token: str, message: str) -> None:
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+    }
+    requests.post(
+        f"https://api.github.com/repos/{repo}/issues/{issue_number}/comments",
+        headers=headers,
+        json={"body": message},
+        timeout=30,
+    ).raise_for_status()
+
+
 def parse_issue_body(body: str) -> tuple[str, dict[str, str]]:
     tweet_id_match = re.search(r"\*\*Tweet ID:\*\*\s*`(\d+)`", body)
     if not tweet_id_match:
@@ -84,14 +97,38 @@ def main() -> None:
         reply_text = comment_body
 
     if len(reply_text) > 280:
-        raise ValueError(f"Reply exceeds 280 characters ({len(reply_text)} chars).")
+        post_comment_only(
+            repo,
+            issue_number,
+            token,
+            f"Reply exceeds 280 characters ({len(reply_text)} chars). Please comment a shorter version or pick `1`, `2`, or `3`.",
+        )
+        return
 
     x_client = get_x_client()
-    response = x_client.create_tweet(
-        text=reply_text,
-        in_reply_to_tweet_id=tweet_id,
-        user_auth=True,
-    )
+    try:
+        response = x_client.create_tweet(
+            text=reply_text,
+            in_reply_to_tweet_id=tweet_id,
+            user_auth=True,
+        )
+    except tweepy.Forbidden as e:
+        detail = getattr(e, "detail", None) or str(e)
+        comment_and_close(
+            repo,
+            issue_number,
+            token,
+            f"Could not publish reply — X returned `403 Forbidden` (the author likely restricted replies or deleted the post).\n\n> {detail}\n\nClosing issue.",
+        )
+        return
+    except tweepy.TweepyException as e:
+        post_comment_only(
+            repo,
+            issue_number,
+            token,
+            f"X API error while publishing reply (issue kept open so you can retry):\n\n> {e}",
+        )
+        raise
 
     posted_id = response.data["id"]
     posted_url = f"https://x.com/pixelgaragedata/status/{posted_id}"
