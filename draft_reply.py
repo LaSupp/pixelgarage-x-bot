@@ -174,7 +174,7 @@ def main() -> None:
         tid = str(tweet.id)
         author_id = str(tweet.author_id)
         if getattr(tweet, "reply_settings", "everyone") != "everyone":
-        continue
+            continue
         if tid in seen_set or author_id == my_user_id:
             continue
         username = users_by_id.get(author_id, "i")
