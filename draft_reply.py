@@ -158,7 +158,7 @@ def main() -> None:
     resp = x_client.search_recent_tweets(
         query=query,
         max_results=15,
-        tweet_fields=["author_id", "public_metrics", "created_at"],
+        tweet_fields=["author_id", "public_metrics", "created_at", "reply_settings"],
         expansions=["author_id"],
         user_fields=["username"],
         user_auth=True,
@@ -173,6 +173,8 @@ def main() -> None:
     for tweet in resp.data:
         tid = str(tweet.id)
         author_id = str(tweet.author_id)
+        if getattr(tweet, "reply_settings", "everyone") != "everyone":
+        continue
         if tid in seen_set or author_id == my_user_id:
             continue
         username = users_by_id.get(author_id, "i")
