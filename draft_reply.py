@@ -11,12 +11,19 @@ from google.genai import types
 SEEN_FILE = "seen_ids.json"
 MAX_SEEN_IDS = 500
 MAX_ISSUES_PER_RUN = 3
+MIN_AUTHOR_FOLLOWERS = 500
+MIN_ENGAGEMENT_SCORE = 5
 
-# Focused queries for real data science, visualization, and sports analytics discussions
+# Multi-signal queries that avoid gaming, crypto, and generic buzzword spam
 SEARCH_QUERIES = [
-    '("data visualization" OR "A/B testing" OR "bayesian" OR "causal inference" OR "p-value") -is:retweet -is:reply -has:links lang:en',
-    '("regression model" OR "feature engineering" OR "sample size" OR "confidence interval" OR "overfitting") -is:retweet -is:reply -has:links lang:en',
-    '("EPA per play" OR "expected points" OR "CPOE" OR "DVOA" OR "win probability") -is:retweet -is:reply lang:en',
+    # 1. Data visualization & storytelling
+    '("data visualization" OR "dataviz" OR "ggplot" OR "matplotlib" OR "scatter plot") ("chart" OR "data" OR "plot" OR "distribution") -is:retweet -is:reply -crypto -airdrop -giveaway lang:en',
+    # 2. Applied statistics, experimentation & causal inference
+    '("causal inference" OR "p-value" OR "bayesian" OR "confidence interval" OR "sample size" OR "A/B test") ("data" OR "model" OR "experiment" OR "regression" OR "metric") -is:retweet -is:reply -roblox -gaming -crypto lang:en',
+    # 3. Practical ML & data science workflows
+    '("feature engineering" OR "overfitting" OR "cross-validation" OR "XGBoost" OR "logistic regression" OR "time series") ("model" OR "data" OR "dataset" OR "accuracy") -is:retweet -is:reply -crypto -hiring lang:en',
+    # 4. NFL analytics & football modeling
+    '("EPA per play" OR "CPOE" OR "DVOA" OR "win probability" OR "expected points" OR "success rate") ("NFL" OR "QB" OR "offense" OR "defense") -is:retweet -is:reply lang:en',
 ]
 
 FALLBACK_MODELS = [
@@ -170,12 +177,12 @@ def main() -> None:
     query = random.choice(SEARCH_QUERIES)
     print(f"Searching X with query: {query}")
 
-    resp = x_client.search_recent_tweets(
+resp = x_client.search_recent_tweets(
         query=query,
-        max_results=30,
+        max_results=100,
         tweet_fields=["author_id", "public_metrics", "created_at", "reply_settings"],
         expansions=["author_id"],
-        user_fields=["username"],
+        user_fields=["username", "public_metrics"],
         user_auth=True,
     )
 
@@ -183,7 +190,13 @@ def main() -> None:
         print("No tweets returned from search.")
         return
 
-    users_by_id = {str(u.id): u.username for u in (resp.includes.get("users", []) if resp.includes else [])}
+    users_by_id = {}
+    for u in (resp.includes.get("users", []) if resp.includes else []):
+        u_metrics = getattr(u, "public_metrics", None) or {}
+        users_by_id[str(u.id)] = {
+            "username": u.username,
+            "followers": u_metrics.get("followers_count", 0),
+        }
 
     candidates = []
     for tweet in resp.data:
@@ -193,10 +206,18 @@ def main() -> None:
             continue
         if tid in seen_set or author_id == my_user_id:
             continue
-        if len(tweet.text.strip()) < 45:
+        if len(tweet.text.strip()) < 60:
             continue
-        username = users_by_id.get(author_id, "i")
-        candidates.append((engagement_score(tweet), tid, username, tweet.text))
+
+        user_info = users_by_id.get(author_id, {"username": "i", "followers": 0})
+        if user_info["followers"] < MIN_AUTHOR_FOLLOWERS:
+            continue
+
+        score = engagement_score(tweet)
+        if score < MIN_ENGAGEMENT_SCORE:
+            continue
+
+        candidates.append((score, tid, user_info["username"], tweet.text))
 
     if not candidates:
         print("No new unseen candidate tweets found.")
