@@ -10,28 +10,36 @@ from google.genai import types
 # --- Configuration ---
 SEEN_FILE = "seen_ids.json"
 MAX_SEEN_IDS = 500
-MAX_ISSUES_PER_RUN = 2
+MAX_ISSUES_PER_RUN = 3
 
-# Update these search queries or target handles to match your @pixelgaragedata niche
+# Focused queries for real data science, visualization, and sports analytics discussions
 SEARCH_QUERIES = [
-    '("data science" OR "statistics" OR "p-value" OR "machine learning") -is:retweet -is:reply lang:en',
-    '("NFL analytics" OR "EPA per play" OR "expected points") -is:retweet -is:reply lang:en',
+    '("data visualization" OR "A/B testing" OR "bayesian" OR "causal inference" OR "p-value") -is:retweet -is:reply -has:links lang:en',
+    '("regression model" OR "feature engineering" OR "sample size" OR "confidence interval" OR "overfitting") -is:retweet -is:reply -has:links lang:en',
+    '("EPA per play" OR "expected points" OR "CPOE" OR "DVOA" OR "win probability") -is:retweet -is:reply lang:en',
 ]
 
-# Working Gemini models in priority order (adjust if your Bluesky script uses specific IDs)
 FALLBACK_MODELS = [
     "gemini-3.8-flash",
     "gemini-3.5-flash-lite",
 ]
 
-SYSTEM_PROMPT = """You are @pixelgaragedata (Pixel Garage Graphics), a sharp, witty data scientist and sports/data nerd.
-Write 3 distinct, engaging reply options to the X post below.
+SYSTEM_PROMPT = """You are @pixelgaragedata (Pixel Garage Graphics), a Principal Data Scientist and sports analytics nerd who builds clean charts and statistical models.
+Write 3 distinct, natural reply options to the X post below.
 
-Guidelines:
+Voice & Tone Rules:
+- Sound like a sharp, helpful peer in the data/analytics community—conversational, curious, and grounded.
+- Do NOT be snarky, condescending, or cynical, and do NOT force jokes on serious or clinical topics.
 - Keep every reply strictly under 240 characters.
-- Be insightful, dryly funny, or add a crisp statistical/analytical angle—never generic praise ("Great post!") or spammy self-promotion.
-- Vary the angles across the 3 options (e.g., 1: witty statistical observation, 2: sharp analytical question, 3: relatable data-nerd joke).
-- Do not use hashtags unless strictly necessary.
+- Never use generic filler ("Great point!", "Love this!", "So true!") or self-promotion.
+- Do not use hashtags.
+- Do not use hyphens or em dashes
+- avoid sounding like AI
+
+Vary the 3 options across these distinct angles:
+1. Analytical Nuance: Point out a practical modeling detail, edge case, or real-world caveat that adds genuine value to the post.
+2. Sharp Follow-Up Question: Ask a specific, thoughtful question about their methodology, data source, or metric choice that invites a reply.
+3. Light/Relatable Take: Share a concise, relatable practitioner observation (keep it warm and clever, never dismissive).
 
 Return ONLY valid JSON in this exact format:
 {
@@ -71,6 +79,15 @@ def get_x_client() -> tweepy.Client:
     )
 
 
+def engagement_score(tweet) -> int:
+    metrics = getattr(tweet, "public_metrics", None) or {}
+    likes = metrics.get("like_count", 0)
+    replies = metrics.get("reply_count", 0)
+    retweets = metrics.get("retweet_count", 0)
+    quotes = metrics.get("quote_count", 0)
+    return likes + (replies * 3) + (retweets * 2) + (quotes * 2)
+
+
 def generate_replies(gemini_client: genai.Client, author_username: str, tweet_text: str) -> list[str]:
     prompt = f"Post by @{author_username}:\n\"\"\"\n{tweet_text}\n\"\"\""
 
@@ -83,7 +100,7 @@ def generate_replies(gemini_client: genai.Client, author_username: str, tweet_te
                     config=types.GenerateContentConfig(
                         system_instruction=SYSTEM_PROMPT,
                         response_mime_type="application/json",
-                        temperature=0.8,
+                        temperature=0.7,
                     ),
                 )
                 parsed = json.loads(response.text)
@@ -147,17 +164,15 @@ def main() -> None:
     x_client = get_x_client()
     gemini_client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 
-    # Verify self user ID so we never reply to our own posts
     me = x_client.get_me(user_auth=True)
     my_user_id = str(me.data.id) if me and me.data else ""
 
-    candidates = []
     query = random.choice(SEARCH_QUERIES)
     print(f"Searching X with query: {query}")
 
     resp = x_client.search_recent_tweets(
         query=query,
-        max_results=15,
+        max_results=30,
         tweet_fields=["author_id", "public_metrics", "created_at", "reply_settings"],
         expansions=["author_id"],
         user_fields=["username"],
@@ -170,6 +185,7 @@ def main() -> None:
 
     users_by_id = {str(u.id): u.username for u in (resp.includes.get("users", []) if resp.includes else [])}
 
+    candidates = []
     for tweet in resp.data:
         tid = str(tweet.id)
         author_id = str(tweet.author_id)
@@ -177,15 +193,20 @@ def main() -> None:
             continue
         if tid in seen_set or author_id == my_user_id:
             continue
+        if len(tweet.text.strip()) < 45:
+            continue
         username = users_by_id.get(author_id, "i")
-        candidates.append((tid, username, tweet.text))
+        candidates.append((engagement_score(tweet), tid, username, tweet.text))
 
     if not candidates:
         print("No new unseen candidate tweets found.")
         return
 
+    # Prioritize posts that already have likes/replies instead of random zero-engagement posts
+    candidates.sort(key=lambda item: item[0], reverse=True)
+
     drafted_count = 0
-    for tid, username, text in candidates:
+    for score, tid, username, text in candidates:
         if drafted_count >= MAX_ISSUES_PER_RUN:
             break
         try:
